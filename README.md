@@ -127,7 +127,7 @@ See [theories/theta_bistream_h3.json](theories/theta_bistream_h3.json) for a com
     "url": "http://localhost:3100",
     "base_query": "{service_name=\"my-service\"}"
   },
-  "poll_interval_ms": 3000,
+  "poll_interval_ms": 500,
   "ingestion_slack_ms": 10000,
   "hypothesis": {
     "All": {
@@ -173,9 +173,9 @@ See [theories/theta_bistream_h3.json](theories/theta_bistream_h3.json) for a com
 **Text (default):**
 ```
 ✓ PASS — all predictions observed
-  [Staged  ] root                     at 12:00:00.000Z
-  [Staged  ] started                  at 12:00:00.000Z
-  [Observed] started                  at 12:00:01.234Z  2024-01-01T12:00:01Z server started
+  [Expecting] root                     at 12:00:00.000Z
+  [Expecting] started                  at 12:00:00.000Z
+  [Observed ] started                  at 12:00:01.234Z  2024-01-01T12:00:01Z server started
   ...
 ```
 
@@ -184,7 +184,7 @@ See [theories/theta_bistream_h3.json](theories/theta_bistream_h3.json) for a com
 {
   "pass": {
     "observations": [
-      { "kind": "staged",   "prediction": "root",    "timestamp": "...", "log_line": null },
+      { "kind": "expecting", "prediction": "root",    "timestamp": "...", "log_line": null },
       { "kind": "observed", "prediction": "started", "timestamp": "...", "log_line": "..." }
     ]
   }

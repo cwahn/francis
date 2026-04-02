@@ -3,7 +3,7 @@
     "url": "http://localhost:13100",
     "base_query": "{service_name=\"organon-core\"}"
   },
-  "poll_interval_ms": 3000,
+  "poll_interval_ms": 500,
   "ingestion_slack_ms": 10000,
   "hypothesis": {
     "All": {

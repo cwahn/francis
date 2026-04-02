@@ -293,7 +293,7 @@ mod tests {
     }
 
     #[test]
-    fn valid_theory() {
+    fn valid_hypothesis() {
         let theory = all(
             Some("root"),
             vec![
