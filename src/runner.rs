@@ -3,7 +3,7 @@ use std::sync::OnceLock;
 
 use chrono::{DateTime, Duration, Utc};
 use regex::Regex;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, trace, warn};
 
 use crate::loki::LokiClient;
 use crate::observation::{Audit, FailureReport, Observation, ObservationKind, RunResult};
@@ -209,10 +209,6 @@ pub async fn run(config: &RunConfig, t0: DateTime<Utc>) -> RunResult {
         // Check root
         let root = &nodes[0];
         match &root.state {
-            NodeState::Observed { .. } => {
-                info!("theory verified — all predictions observed");
-                return RunResult::Pass(Audit { observations });
-            }
             NodeState::Failed { .. } => {
                 // Find the first failed Unit for the report
                 let (failed_name, pattern, search_start, search_end) =
@@ -225,6 +221,10 @@ pub async fn run(config: &RunConfig, t0: DateTime<Utc>) -> RunResult {
                     search_end,
                     audit: Audit { observations },
                 });
+            }
+            NodeState::Observed { .. } => {
+                info!("theory verified — all predictions observed");
+                return RunResult::Pass(Audit { observations });
             }
             _ => {}
         }
@@ -240,7 +240,7 @@ fn stage_node(
     if !matches!(nodes[id].state, NodeState::Pending) {
         return;
     }
-    debug!(node = %nodes[id].name, %at, "staging");
+    trace!(prediction = %nodes[id].name, "observing prediction");
     nodes[id].state = NodeState::Staged { at };
     observations.push(Observation {
         kind: ObservationKind::Staged,
@@ -258,22 +258,15 @@ fn staging_pass(
 ) {
     // We iterate by index to avoid borrow issues
     for i in 0..nodes.len() {
-        if !matches!(nodes[i].state, NodeState::Staged { .. }) {
-            continue;
-        }
-
-        let staged_at = match &nodes[i].state {
-            NodeState::Staged { at } => *at,
-            _ => unreachable!(),
-        };
+        let &NodeState::Staged { at: staged_at } = &nodes[i].state else { continue };
 
         // Both All and Any stage children identically:
         // stage every pending child whose `after` dependency is met.
         // Ordering comes ONLY from explicit `after` references.
         // Children without `after` use parent's staged time.
         let children = match &nodes[i].kind {
-            NodeKind::All { children, .. } | NodeKind::Any { children, .. } => children.clone(),
             NodeKind::Unit { .. } => continue,
+            NodeKind::All { children, .. } | NodeKind::Any { children, .. } => children.clone(),
         };
 
         for &child_id in &children {
@@ -281,9 +274,8 @@ fn staging_pass(
                 continue;
             }
             let ref_time = resolve_ref_time(&nodes[child_id], nodes, name_to_id, staged_at);
-            if let Some(rt) = ref_time {
-                stage_node(nodes, child_id, rt, observations);
-            }
+            let Some(rt) = ref_time else { continue };
+            stage_node(nodes, child_id, rt, observations);
         }
     }
 }
@@ -306,10 +298,10 @@ fn resolve_ref_time(
     if let Some(ref_name) = after {
         let ref_id = name_to_id.get(ref_name)?;
         return match &nodes[*ref_id].state {
+            NodeState::Pending | NodeState::Staged { .. } | NodeState::Failed { .. } => None,
             // +1ns: "after X" means search starts just past X's observed timestamp,
             // so we never re-match X's own log entry.
             NodeState::Observed { at, .. } => Some(*at + Duration::nanoseconds(1)),
-            _ => None, // dependency not yet observed
         };
     }
     // No explicit `after` — use parent's staged time
@@ -326,12 +318,12 @@ async fn query_pass(
     observations: &mut Vec<Observation>,
 ) {
     for i in 0..nodes.len() {
-        let (pattern, _after_ref, timeout_ms, staged_at) = match &nodes[i] {
+        let (pattern, timeout_ms, staged_at) = match &nodes[i] {
             Node {
                 kind: NodeKind::Unit { pattern, after: _, timeout_ms },
                 state: NodeState::Staged { at },
                 ..
-            } => (pattern.clone(), *at, *timeout_ms, *at),
+            } => (pattern.clone(), *timeout_ms, *at),
             _ => continue,
         };
 
@@ -343,9 +335,31 @@ async fn query_pass(
         let resolved_pattern = apply_captures(&pattern, capture_store);
         let query = format!("{} {}", base_query, resolved_pattern);
         match client.query_first(&query, staged_at, window_end).await {
+            Err(e) => {
+                error!(prediction = %nodes[i].name, error = %e, "loki query failed, will retry");
+            }
+            Ok(None) => {
+                // No match found — check if we should give up.
+                if now > deadline {
+                    let name = nodes[i].name.clone();
+                    nodes[i].state = NodeState::Failed { at: now };
+                    if is_critical_timeout(nodes, i) {
+                        warn!(prediction = %name, "prediction timed out");
+                    } else {
+                        trace!(prediction = %name, "prediction timed out (non-critical)");
+                    }
+                    observations.push(Observation {
+                        kind: ObservationKind::Failed,
+                        prediction: name,
+                        timestamp: now,
+                        log_line: None,
+                    });
+                }
+                // else: keep polling
+            }
             Ok(Some(entry)) => {
                 let name = nodes[i].name.clone();
-                info!(prediction = %name, ts = %entry.timestamp, "prediction observed");
+                debug!(prediction = %name, ts = %entry.timestamp, "observed prediction");
                 // Extract any named captures from the matched line and store them.
                 let new_caps = extract_regexp_captures(&resolved_pattern, &entry.line);
                 capture_store.extend(new_caps);
@@ -359,24 +373,6 @@ async fn query_pass(
                     timestamp: entry.timestamp,
                     log_line: Some(entry.line),
                 });
-            }
-            Ok(None) => {
-                // No match found — check if we should give up.
-                if now > deadline {
-                    let name = nodes[i].name.clone();
-                    warn!(prediction = %name, "prediction timed out");
-                    nodes[i].state = NodeState::Failed { at: now };
-                    observations.push(Observation {
-                        kind: ObservationKind::Failed,
-                        prediction: name,
-                        timestamp: now,
-                        log_line: None,
-                    });
-                }
-                // else: keep polling
-            }
-            Err(e) => {
-                warn!(prediction = %nodes[i].name, error = %e, "loki query failed, will retry");
             }
         }
     }
@@ -399,7 +395,17 @@ fn propagation_pass(nodes: &mut Vec<Node>, observations: &mut Vec<Observation>) 
                     .iter()
                     .any(|&c| matches!(nodes[c].state, NodeState::Failed { .. }));
 
-                if all_observed {
+                if any_failed {
+                    let at = Utc::now();
+                    let name = nodes[i].name.clone();
+                    nodes[i].state = NodeState::Failed { at };
+                    observations.push(Observation {
+                        kind: ObservationKind::Failed,
+                        prediction: name,
+                        timestamp: at,
+                        log_line: None,
+                    });
+                } else if all_observed {
                     // Timestamp = last child's observation
                     let at = children
                         .iter()
@@ -410,20 +416,10 @@ fn propagation_pass(nodes: &mut Vec<Node>, observations: &mut Vec<Observation>) 
                         .max()
                         .unwrap();
                     let name = nodes[i].name.clone();
-                    info!(group = %name, "All group observed");
+                    debug!(group = %name, "All group observed");
                     nodes[i].state = NodeState::Observed { at, line: None };
                     observations.push(Observation {
                         kind: ObservationKind::Observed,
-                        prediction: name,
-                        timestamp: at,
-                        log_line: None,
-                    });
-                } else if any_failed {
-                    let at = Utc::now();
-                    let name = nodes[i].name.clone();
-                    nodes[i].state = NodeState::Failed { at };
-                    observations.push(Observation {
-                        kind: ObservationKind::Failed,
                         prediction: name,
                         timestamp: at,
                         log_line: None,
@@ -439,26 +435,24 @@ fn propagation_pass(nodes: &mut Vec<Node>, observations: &mut Vec<Observation>) 
                     .iter()
                     .all(|&c| matches!(nodes[c].state, NodeState::Failed { .. }));
 
-                if let Some(&c) = first_observed {
-                    let (at, line) = match &nodes[c].state {
-                        NodeState::Observed { at, line } => (*at, line.clone()),
-                        _ => unreachable!(),
-                    };
-                    let name = nodes[i].name.clone();
-                    info!(group = %name, winner = %nodes[c].name, "Any group observed");
-                    nodes[i].state = NodeState::Observed { at, line };
-                    observations.push(Observation {
-                        kind: ObservationKind::Observed,
-                        prediction: name,
-                        timestamp: at,
-                        log_line: None,
-                    });
-                } else if all_failed {
+                if all_failed {
                     let at = Utc::now();
                     let name = nodes[i].name.clone();
                     nodes[i].state = NodeState::Failed { at };
                     observations.push(Observation {
                         kind: ObservationKind::Failed,
+                        prediction: name,
+                        timestamp: at,
+                        log_line: None,
+                    });
+                } else if let Some(&c) = first_observed {
+                    let NodeState::Observed { at, line } = &nodes[c].state else { unreachable!() };
+                    let (at, line) = (*at, line.clone());
+                    let name = nodes[i].name.clone();
+                    debug!(group = %name, winner = %nodes[c].name, "Any group observed");
+                    nodes[i].state = NodeState::Observed { at, line };
+                    observations.push(Observation {
+                        kind: ObservationKind::Observed,
                         prediction: name,
                         timestamp: at,
                         log_line: None,
@@ -470,21 +464,27 @@ fn propagation_pass(nodes: &mut Vec<Node>, observations: &mut Vec<Observation>) 
     }
 }
 
+fn is_critical_timeout(nodes: &[Node], node_id: usize) -> bool {
+    let Some(parent_id) = nodes[node_id].parent else { return true };
+    match &nodes[parent_id].kind {
+        NodeKind::Unit { .. } | NodeKind::All { .. } => true,
+        NodeKind::Any { children, .. } => children
+            .iter()
+            .filter(|&&c| c != node_id)
+            .all(|&c| matches!(nodes[c].state, NodeState::Failed { .. })),
+    }
+}
+
 fn find_failed_unit(
     nodes: &[Node],
     _name_to_id: &HashMap<String, usize>,
 ) -> (String, String, DateTime<Utc>, DateTime<Utc>) {
     for node in nodes {
-        if let NodeState::Failed { at } = &node.state {
-            if let NodeKind::Unit { pattern, timeout_ms, .. } = &node.kind {
-                if let NodeState::Failed { .. } = &node.state {
-                    // Reconstruct search window
-                    let search_end = *at;
-                    let search_start = search_end - Duration::milliseconds(*timeout_ms as i64);
-                    return (node.name.clone(), pattern.clone(), search_start, search_end);
-                }
-            }
-        }
+        let NodeState::Failed { at } = &node.state else { continue };
+        let NodeKind::Unit { pattern, timeout_ms, .. } = &node.kind else { continue };
+        let search_end = *at;
+        let search_start = search_end - Duration::milliseconds(*timeout_ms as i64);
+        return (node.name.clone(), pattern.clone(), search_start, search_end);
     }
     // Fallback if only group nodes failed (shouldn't happen with well-formed theories)
     let root = &nodes[0];
