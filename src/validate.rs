@@ -1,8 +1,10 @@
 use std::collections::HashSet;
 
+use regex::Regex;
+use std::sync::OnceLock;
 use thiserror::Error;
 
-use crate::theory::{GroupPrediction, PredictionDef};
+use crate::theory::{GroupPrediction, PredictionDef, UnitPrediction};
 
 #[derive(Debug, Error)]
 pub enum ValidationError {
@@ -16,6 +18,10 @@ pub enum ValidationError {
     EmptyGroup(String),
     #[error("root prediction must not have `after` set")]
     RootHasAfter,
+    #[error("invalid regexp in prediction `{prediction}`: {error}")]
+    InvalidRegexp { prediction: String, error: String },
+    #[error("capture `${{{capture}}}` used in prediction `{prediction}` but not guaranteed to be defined (not defined or defined in only some branches of an Any group)")]
+    UndefinedCapture { prediction: String, capture: String },
 }
 
 /// Validate a theory before execution.
@@ -26,6 +32,8 @@ pub enum ValidationError {
 /// 3. No forward references (referenced binding must appear before referencing prediction in DFS order)
 /// 4. All/Any groups must have at least one child
 /// 5. Root prediction must not have `after`
+/// 6. All `| regexp "..."` patterns have valid regex syntax
+/// 7. `${name}` capture references are guaranteed to be defined before use
 pub fn validate(theory: &PredictionDef) -> Result<(), Vec<ValidationError>> {
     let mut errors = Vec::new();
     let mut all_bindings = HashSet::new();
@@ -41,6 +49,13 @@ pub fn validate(theory: &PredictionDef) -> Result<(), Vec<ValidationError>> {
 
     // Phase 3: check references exist and are not forward
     check_references(theory, &binding_order, &mut errors);
+
+    // Phase 4: validate all | regexp "..." patterns have valid regex syntax
+    check_patterns(theory, &mut errors);
+
+    // Phase 5: validate capture scope — ${name} refs must be guaranteed-defined before use
+    let mut guaranteed: HashSet<String> = HashSet::new();
+    check_captures(theory, &mut guaranteed, &mut errors);
 
     if errors.is_empty() {
         Ok(())
@@ -111,6 +126,117 @@ fn check_references(
         | PredictionDef::Any(GroupPrediction { predictions, .. }) => {
             for child in predictions {
                 check_references(child, binding_order, errors);
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Pattern helpers
+// ---------------------------------------------------------------------------
+
+/// Extract raw regex strings from `| regexp "..."` stages in a LogQL pattern.
+fn regexp_strings(pattern: &str) -> Vec<String> {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| Regex::new(r#"\|\s*regexp\s*"((?:[^"\\]|\\.)*)""#).unwrap());
+    re.captures_iter(pattern)
+        .map(|c| c[1].replace("\\\"", "\""))
+        .collect()
+}
+
+/// Extract `(?P<name>...)` capture group names from a string.
+fn capture_names(s: &str) -> Vec<String> {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| Regex::new(r"\(\?P<([^>]+)>").unwrap());
+    re.captures_iter(s).map(|c| c[1].to_owned()).collect()
+}
+
+/// Extract `${name}` template reference names from a string.
+fn template_refs(s: &str) -> Vec<String> {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| Regex::new(r"\$\{([^}]+)\}").unwrap());
+    re.captures_iter(s).map(|c| c[1].to_owned()).collect()
+}
+
+// ---------------------------------------------------------------------------
+// Phase 4: regexp syntax validation
+// ---------------------------------------------------------------------------
+
+fn check_patterns(pred: &PredictionDef, errors: &mut Vec<ValidationError>) {
+    if let PredictionDef::Unit(u) = pred {
+        check_unit_patterns(u, errors);
+    }
+    match pred {
+        PredictionDef::Unit(_) => {}
+        PredictionDef::All(g) | PredictionDef::Any(g) => {
+            for child in &g.predictions {
+                check_patterns(child, errors);
+            }
+        }
+    }
+}
+
+fn check_unit_patterns(u: &UnitPrediction, errors: &mut Vec<ValidationError>) {
+    let pred_name = u.binding.as_deref().unwrap_or("<anonymous>");
+    for raw in regexp_strings(&u.pattern) {
+        if let Err(e) = Regex::new(&raw) {
+            errors.push(ValidationError::InvalidRegexp {
+                prediction: pred_name.to_owned(),
+                error: e.to_string(),
+            });
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Phase 5: capture scope validation
+// ---------------------------------------------------------------------------
+
+/// Walk the theory DFS, tracking which captures are guaranteed to be defined.
+/// - `All`: captures accumulate monotonically (all children run).
+/// - `Any`: only captures defined by ALL branches (intersection) are guaranteed.
+/// `${name}` used outside guaranteed scope → UndefinedCapture error.
+fn check_captures(
+    pred: &PredictionDef,
+    guaranteed: &mut HashSet<String>,
+    errors: &mut Vec<ValidationError>,
+) {
+    match pred {
+        PredictionDef::Unit(u) => {
+            let pred_name = u.binding.as_deref().unwrap_or("<anonymous>");
+            for cap in template_refs(&u.pattern) {
+                if !guaranteed.contains(&cap) {
+                    errors.push(ValidationError::UndefinedCapture {
+                        prediction: pred_name.to_owned(),
+                        capture: cap,
+                    });
+                }
+            }
+            for cap in capture_names(&u.pattern) {
+                guaranteed.insert(cap);
+            }
+        }
+        PredictionDef::All(g) => {
+            for child in &g.predictions {
+                check_captures(child, guaranteed, errors);
+            }
+        }
+        PredictionDef::Any(g) => {
+            let mut branch_new_caps: Vec<HashSet<String>> = Vec::new();
+            for branch in &g.predictions {
+                let mut branch_guaranteed = guaranteed.clone();
+                check_captures(branch, &mut branch_guaranteed, errors);
+                let new: HashSet<String> = branch_guaranteed.difference(guaranteed).cloned().collect();
+                branch_new_caps.push(new);
+            }
+            // Only intersection across ALL branches is guaranteed after the Any.
+            if let Some((first, rest)) = branch_new_caps.split_first() {
+                let intersection: HashSet<String> = first
+                    .iter()
+                    .filter(|c| rest.iter().all(|bc| bc.contains(*c)))
+                    .cloned()
+                    .collect();
+                guaranteed.extend(intersection);
             }
         }
     }
@@ -214,6 +340,69 @@ mod tests {
             unit(Some("a"), "|= \"x\"", None, 1000),
             unit(Some("b"), "|= \"y\"", None, 1000),
             unit(Some("c"), "|= \"z\"", Some("a"), 3000),
+        ]);
+        assert!(validate(&theory).is_ok());
+    }
+
+    // --- Phase 4: pattern validation ---
+
+    #[test]
+    fn invalid_regexp_pattern() {
+        let theory = unit(Some("a"), "|= \"foo\" | regexp \"(?P<x>[unclosed)\"", None, 1000);
+        let errs = validate(&theory).unwrap_err();
+        assert!(errs.iter().any(|e| matches!(e, ValidationError::InvalidRegexp { prediction, .. } if prediction == "a")));
+    }
+
+    #[test]
+    fn valid_regexp_pattern() {
+        let theory = unit(Some("a"), "|= \"conn\" | regexp \"conn_id=(?P<conn_id>[a-f0-9]+)\"", None, 1000);
+        assert!(validate(&theory).is_ok());
+    }
+
+    // --- Phase 5: capture scope validation ---
+
+    #[test]
+    fn capture_defined_before_use_ok() {
+        let theory = all(Some("root"), vec![
+            unit(Some("a"), "|= \"conn\" | regexp \"id=(?P<cid>\\\\w+)\"", None, 1000),
+            unit(Some("b"), "|= \"${cid}\"", Some("a"), 1000),
+        ]);
+        assert!(validate(&theory).is_ok());
+    }
+
+    #[test]
+    fn capture_used_before_defined_fails() {
+        let theory = all(Some("root"), vec![
+            unit(Some("a"), "|= \"${cid}\"", None, 1000),
+            unit(Some("b"), "|= \"conn\" | regexp \"id=(?P<cid>\\\\w+)\"", Some("a"), 1000),
+        ]);
+        let errs = validate(&theory).unwrap_err();
+        assert!(errs.iter().any(|e| matches!(e, ValidationError::UndefinedCapture { prediction, capture } if prediction == "a" && capture == "cid")));
+    }
+
+    #[test]
+    fn partial_any_capture_used_after_fails() {
+        // Branch A defines `cid`, branch B does not. Using ${cid} after Any should fail.
+        let theory = all(Some("root"), vec![
+            any(Some("gate"), vec![
+                unit(Some("a"), "|= \"conn\" | regexp \"id=(?P<cid>\\\\w+)\"", None, 1000),
+                unit(Some("b"), "|= \"other\"", None, 1000),
+            ]),
+            unit(Some("c"), "|= \"${cid}\"", Some("gate"), 1000),
+        ]);
+        let errs = validate(&theory).unwrap_err();
+        assert!(errs.iter().any(|e| matches!(e, ValidationError::UndefinedCapture { prediction, capture } if prediction == "c" && capture == "cid")));
+    }
+
+    #[test]
+    fn all_any_branches_define_capture_ok() {
+        // Both branches of Any define `cid`, so it's guaranteed after.
+        let theory = all(Some("root"), vec![
+            any(Some("gate"), vec![
+                unit(Some("a"), "|= \"conn1\" | regexp \"id=(?P<cid>\\\\w+)\"", None, 1000),
+                unit(Some("b"), "|= \"conn2\" | regexp \"id=(?P<cid>\\\\w+)\"", None, 1000),
+            ]),
+            unit(Some("c"), "|= \"${cid}\"", Some("gate"), 1000),
         ]);
         assert!(validate(&theory).is_ok());
     }

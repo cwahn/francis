@@ -50,7 +50,7 @@ enum NodeState {
     Pending,
     Staged { at: DateTime<Utc> },
     Observed { at: DateTime<Utc>, line: Option<String> },
-    Failed { at: DateTime<Utc> },
+    Failed { staged_at: DateTime<Utc> },
 }
 
 impl NodeState {
@@ -342,7 +342,7 @@ async fn query_pass(
                 // No match found — check if we should give up.
                 if now > deadline {
                     let name = nodes[i].name.clone();
-                    nodes[i].state = NodeState::Failed { at: now };
+                    nodes[i].state = NodeState::Failed { staged_at };
                     if is_critical_timeout(nodes, i) {
                         warn!(prediction = %name, "prediction timed out");
                     } else {
@@ -396,9 +396,10 @@ fn propagation_pass(nodes: &mut Vec<Node>, observations: &mut Vec<Observation>) 
                     .any(|&c| matches!(nodes[c].state, NodeState::Failed { .. }));
 
                 if any_failed {
+                    let &NodeState::Staged { at: staged_at } = &nodes[i].state else { unreachable!() };
                     let at = Utc::now();
                     let name = nodes[i].name.clone();
-                    nodes[i].state = NodeState::Failed { at };
+                    nodes[i].state = NodeState::Failed { staged_at };
                     observations.push(Observation {
                         kind: ObservationKind::Failed,
                         prediction: name,
@@ -436,9 +437,10 @@ fn propagation_pass(nodes: &mut Vec<Node>, observations: &mut Vec<Observation>) 
                     .all(|&c| matches!(nodes[c].state, NodeState::Failed { .. }));
 
                 if all_failed {
+                    let &NodeState::Staged { at: staged_at } = &nodes[i].state else { unreachable!() };
                     let at = Utc::now();
                     let name = nodes[i].name.clone();
-                    nodes[i].state = NodeState::Failed { at };
+                    nodes[i].state = NodeState::Failed { staged_at };
                     observations.push(Observation {
                         kind: ObservationKind::Failed,
                         prediction: name,
@@ -480,10 +482,10 @@ fn find_failed_unit(
     _name_to_id: &HashMap<String, usize>,
 ) -> (String, String, DateTime<Utc>, DateTime<Utc>) {
     for node in nodes {
-        let NodeState::Failed { at } = &node.state else { continue };
+        let NodeState::Failed { staged_at, .. } = &node.state else { continue };
         let NodeKind::Unit { pattern, timeout_ms, .. } = &node.kind else { continue };
-        let search_end = *at;
-        let search_start = search_end - Duration::milliseconds(*timeout_ms as i64);
+        let search_start = *staged_at;
+        let search_end = *staged_at + Duration::milliseconds(*timeout_ms as i64);
         return (node.name.clone(), pattern.clone(), search_start, search_end);
     }
     // Fallback if only group nodes failed (shouldn't happen with well-formed theories)

@@ -1,9 +1,11 @@
 use std::fmt;
 
 use chrono::{DateTime, Utc};
+use serde::Serialize;
 
 /// What happened to a prediction.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ObservationKind {
     Staged,
     Observed,
@@ -21,7 +23,7 @@ impl fmt::Display for ObservationKind {
 }
 
 /// A single observation event in the audit trail.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Observation {
     pub kind: ObservationKind,
     pub prediction: String,
@@ -30,13 +32,13 @@ pub struct Observation {
 }
 
 /// Complete audit trail for a successful run.
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct Audit {
     pub observations: Vec<Observation>,
 }
 
 /// Describes a failed prediction with enough context for focused debugging.
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct FailureReport {
     pub failed_prediction: String,
     pub pattern: String,
@@ -46,7 +48,8 @@ pub struct FailureReport {
 }
 
 /// Outcome of running a theory.
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum RunResult {
     Pass(Audit),
     Fail(FailureReport),

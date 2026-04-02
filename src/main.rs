@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::process;
 
 use chrono::{DateTime, Utc};
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
@@ -37,6 +37,16 @@ struct Cli {
     /// Validate the theory without running it.
     #[arg(long)]
     dry_run: bool,
+
+    /// Output format.
+    #[arg(long, value_enum, default_value = "text")]
+    output: OutputFormat,
+}
+
+#[derive(Clone, ValueEnum)]
+enum OutputFormat {
+    Text,
+    Json,
 }
 
 fn parse_t0(s: &str) -> Result<DateTime<Utc>, String> {
@@ -115,11 +125,17 @@ async fn main() {
 
     match &result {
         RunResult::Pass(_) => {
-            println!("{result}");
+            match cli.output {
+                OutputFormat::Text => println!("{result}"),
+                OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&result).unwrap()),
+            }
             process::exit(0);
         }
         RunResult::Fail(_) => {
-            println!("{result}");
+            match cli.output {
+                OutputFormat::Text => println!("{result}"),
+                OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&result).unwrap()),
+            }
             process::exit(1);
         }
     }
