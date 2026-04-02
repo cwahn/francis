@@ -56,7 +56,7 @@ pub struct UnitPrediction {
 #[derive(Debug, Deserialize)]
 pub struct GroupPrediction {
     pub binding: Option<Binding>,
-    /// Reference to a prior prediction's binding. `None` means "starts at parent's staged time".
+    /// Reference to a prior prediction's binding. `None` means "starts at parent's expected time".
     pub after: Option<Binding>,
     pub predictions: Vec<PredictionDef>,
 }

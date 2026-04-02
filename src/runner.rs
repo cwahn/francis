@@ -31,7 +31,7 @@ struct Node {
 enum NodeKind {
     Unit {
         pattern: String,
-        /// Explicit `after` binding, or None (use parent's staged time).
+        /// Explicit `after` binding, or None (use parent's expected time).
         after: Option<Binding>,
         timeout_ms: u64,
     },
@@ -48,9 +48,9 @@ enum NodeKind {
 #[derive(Debug, Clone)]
 enum NodeState {
     Pending,
-    Staged { at: DateTime<Utc> },
+    Expecting { at: DateTime<Utc> },
     Observed { at: DateTime<Utc>, line: Option<String> },
-    Failed { staged_at: DateTime<Utc> },
+    Failed { expected_at: DateTime<Utc> },
 }
 
 impl NodeState {
@@ -191,16 +191,16 @@ pub async fn run(config: &RunConfig, t0: DateTime<Utc>) -> RunResult {
     let mut capture_store: HashMap<String, String> = HashMap::new();
 
     // Stage root
-    stage_node(&mut nodes, 0, t0, &mut observations);
+    expect_node(&mut nodes, 0, t0, &mut observations);
 
     loop {
         tokio::time::sleep(poll_interval).await;
         let now = Utc::now();
 
-        // Staging pass: propagate staging to children
-        staging_pass(&mut nodes, t0, &name_to_id, &mut observations);
+        // Expecting pass: propagate expecting pass to children
+        expecting_pass(&mut nodes, t0, &name_to_id, &mut observations);
 
-        // Query pass: poll Loki for each staged Unit
+        // Query pass: poll Loki for each expecting Unit
         query_pass(&mut nodes, &client, base_query, now, ingestion_slack, &mut capture_store, &mut observations).await;
 
         // Propagation pass: propagate child results to parents
@@ -231,7 +231,7 @@ pub async fn run(config: &RunConfig, t0: DateTime<Utc>) -> RunResult {
     }
 }
 
-fn stage_node(
+fn expect_node(
     nodes: &mut [Node],
     id: usize,
     at: DateTime<Utc>,
@@ -241,16 +241,16 @@ fn stage_node(
         return;
     }
     trace!(prediction = %nodes[id].name, "observing prediction");
-    nodes[id].state = NodeState::Staged { at };
+    nodes[id].state = NodeState::Expecting { at };
     observations.push(Observation {
-        kind: ObservationKind::Staged,
+        kind: ObservationKind::Expecting,
         prediction: nodes[id].name.clone(),
         timestamp: at,
         log_line: None,
     });
 }
 
-fn staging_pass(
+fn expecting_pass(
     nodes: &mut Vec<Node>,
     _t0: DateTime<Utc>,
     name_to_id: &HashMap<String, usize>,
@@ -258,12 +258,12 @@ fn staging_pass(
 ) {
     // We iterate by index to avoid borrow issues
     for i in 0..nodes.len() {
-        let &NodeState::Staged { at: staged_at } = &nodes[i].state else { continue };
+        let &NodeState::Expecting { at: expected_at } = &nodes[i].state else { continue };
 
         // Both All and Any stage children identically:
         // stage every pending child whose `after` dependency is met.
         // Ordering comes ONLY from explicit `after` references.
-        // Children without `after` use parent's staged time.
+        // Children without `after` use parent's expected time.
         let children = match &nodes[i].kind {
             NodeKind::Unit { .. } => continue,
             NodeKind::All { children, .. } | NodeKind::Any { children, .. } => children.clone(),
@@ -273,22 +273,22 @@ fn staging_pass(
             if !matches!(nodes[child_id].state, NodeState::Pending) {
                 continue;
             }
-            let ref_time = resolve_ref_time(&nodes[child_id], nodes, name_to_id, staged_at);
+            let ref_time = resolve_ref_time(&nodes[child_id], nodes, name_to_id, expected_at);
             let Some(rt) = ref_time else { continue };
-            stage_node(nodes, child_id, rt, observations);
+            expect_node(nodes, child_id, rt, observations);
         }
     }
 }
 
 /// Determine the reference time for a child node.
 /// - Explicit `after`: waits for that binding to be Observed, uses its timestamp.
-/// - No `after`: uses parent's staged time (immediate).
+/// - No `after`: uses parent's expected time (immediate).
 /// Returns None if the `after` dependency isn't observed yet.
 fn resolve_ref_time(
     child: &Node,
     nodes: &[Node],
     name_to_id: &HashMap<String, usize>,
-    parent_staged_at: DateTime<Utc>,
+    parent_expected_at: DateTime<Utc>,
 ) -> Option<DateTime<Utc>> {
     let after = match &child.kind {
         NodeKind::Unit { after, .. } => after.as_ref(),
@@ -298,14 +298,14 @@ fn resolve_ref_time(
     if let Some(ref_name) = after {
         let ref_id = name_to_id.get(ref_name)?;
         return match &nodes[*ref_id].state {
-            NodeState::Pending | NodeState::Staged { .. } | NodeState::Failed { .. } => None,
+            NodeState::Pending | NodeState::Expecting { .. } | NodeState::Failed { .. } => None,
             // +1ns: "after X" means search starts just past X's observed timestamp,
             // so we never re-match X's own log entry.
             NodeState::Observed { at, .. } => Some(*at + Duration::nanoseconds(1)),
         };
     }
-    // No explicit `after` — use parent's staged time
-    Some(parent_staged_at)
+    // No explicit `after` — use parent's expected time
+    Some(parent_expected_at)
 }
 
 async fn query_pass(
@@ -318,23 +318,23 @@ async fn query_pass(
     observations: &mut Vec<Observation>,
 ) {
     for i in 0..nodes.len() {
-        let (pattern, timeout_ms, staged_at) = match &nodes[i] {
+        let (pattern, timeout_ms, expected_at) = match &nodes[i] {
             Node {
                 kind: NodeKind::Unit { pattern, after: _, timeout_ms },
-                state: NodeState::Staged { at },
+                state: NodeState::Expecting { at },
                 ..
             } => (pattern.clone(), *timeout_ms, *at),
             _ => continue,
         };
 
         let timeout = Duration::milliseconds(timeout_ms as i64);
-        let window_end = staged_at + timeout;
+        let window_end = expected_at + timeout;
         let deadline = window_end + ingestion_slack;
 
         // Query Loki FIRST — for retrospective runs the data already exists.
         let resolved_pattern = apply_captures(&pattern, capture_store);
         let query = format!("{} {}", base_query, resolved_pattern);
-        match client.query_first(&query, staged_at, window_end).await {
+        match client.query_first(&query, expected_at, window_end).await {
             Err(e) => {
                 error!(prediction = %nodes[i].name, error = %e, "loki query failed, will retry");
             }
@@ -342,7 +342,7 @@ async fn query_pass(
                 // No match found — check if we should give up.
                 if now > deadline {
                     let name = nodes[i].name.clone();
-                    nodes[i].state = NodeState::Failed { staged_at };
+                    nodes[i].state = NodeState::Failed { expected_at };
                     if is_critical_timeout(nodes, i) {
                         warn!(prediction = %name, "prediction timed out");
                     } else {
@@ -396,10 +396,10 @@ fn propagation_pass(nodes: &mut Vec<Node>, observations: &mut Vec<Observation>) 
                     .any(|&c| matches!(nodes[c].state, NodeState::Failed { .. }));
 
                 if any_failed {
-                    let &NodeState::Staged { at: staged_at } = &nodes[i].state else { unreachable!() };
+                    let &NodeState::Expecting { at: expected_at } = &nodes[i].state else { unreachable!() };
                     let at = Utc::now();
                     let name = nodes[i].name.clone();
-                    nodes[i].state = NodeState::Failed { staged_at };
+                    nodes[i].state = NodeState::Failed { expected_at };
                     observations.push(Observation {
                         kind: ObservationKind::Failed,
                         prediction: name,
@@ -437,10 +437,10 @@ fn propagation_pass(nodes: &mut Vec<Node>, observations: &mut Vec<Observation>) 
                     .all(|&c| matches!(nodes[c].state, NodeState::Failed { .. }));
 
                 if all_failed {
-                    let &NodeState::Staged { at: staged_at } = &nodes[i].state else { unreachable!() };
+                    let &NodeState::Expecting { at: expected_at } = &nodes[i].state else { unreachable!() };
                     let at = Utc::now();
                     let name = nodes[i].name.clone();
-                    nodes[i].state = NodeState::Failed { staged_at };
+                    nodes[i].state = NodeState::Failed { expected_at };
                     observations.push(Observation {
                         kind: ObservationKind::Failed,
                         prediction: name,
@@ -482,10 +482,10 @@ fn find_failed_unit(
     _name_to_id: &HashMap<String, usize>,
 ) -> (String, String, DateTime<Utc>, DateTime<Utc>) {
     for node in nodes {
-        let NodeState::Failed { staged_at, .. } = &node.state else { continue };
+        let NodeState::Failed { expected_at, .. } = &node.state else { continue };
         let NodeKind::Unit { pattern, timeout_ms, .. } = &node.kind else { continue };
-        let search_start = *staged_at;
-        let search_end = *staged_at + Duration::milliseconds(*timeout_ms as i64);
+        let search_start = *expected_at;
+        let search_end = *expected_at + Duration::milliseconds(*timeout_ms as i64);
         return (node.name.clone(), pattern.clone(), search_start, search_end);
     }
     // Fallback if only group nodes failed (shouldn't happen with well-formed theories)
