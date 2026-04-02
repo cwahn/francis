@@ -1,5 +1,8 @@
 # francis
 
+[![Crates.io](https://img.shields.io/crates/v/francis.svg)](https://crates.io/crates/francis)
+[![CI](https://github.com/cwahn/francis/actions/workflows/ci.yml/badge.svg)](https://github.com/cwahn/francis/actions/workflows/ci.yml)
+
 **Log-based hypothesis verifier.** Declare a tree of ordered predictions about expected log events, run them against a [Loki](https://grafana.com/oss/loki/) instance, and get a clear pass/fail report with a full audit trail.
 
 ## Motivation
