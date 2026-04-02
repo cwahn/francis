@@ -45,7 +45,7 @@ pub enum PredictionDef {
 pub struct UnitPrediction {
     pub binding: Option<Binding>,
     /// LogQL line filter pipeline, e.g. `|= "service registered"`.
-    pub filter: String,
+    pub pattern: String,
     /// Reference to a prior prediction's binding. `None` means "after previous sibling".
     pub after: Option<Binding>,
     pub timeout_ms: TimeoutMs,
