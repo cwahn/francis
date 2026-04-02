@@ -1,0 +1,84 @@
+{
+  "source": {
+    "url": "http://localhost:13100",
+    "base_query": "{service_name=\"organon-core\"}"
+  },
+  "poll_interval_ms": 3000,
+  "ingestion_slack_ms": 10000,
+  "theory": {
+    "All": {
+      "binding": "root",
+      "predictions": [
+        {
+          "Unit": {
+            "binding": "server_started",
+            "filter": "|= \"provision started\"",
+            "timeout_ms": 90000
+          }
+        },
+        {
+          "Unit": {
+            "binding": "governance_ready",
+            "filter": "|= \"governance registered\"",
+            "after": "server_started",
+            "timeout_ms": 60000
+          }
+        },
+        {
+          "Unit": {
+            "binding": "all_spawned",
+            "filter": "|= \"all services spawned\"",
+            "after": "governance_ready",
+            "timeout_ms": 60000
+          }
+        },
+        {
+          "Unit": {
+            "binding": "conn_accepted",
+            "filter": "|= \"accept_and_prepare: connection accepted\"",
+            "after": "all_spawned",
+            "timeout_ms": 120000
+          }
+        },
+        {
+          "Unit": {
+            "binding": "first_bi",
+            "filter": "|= \"accept_bi: got bi-stream\"",
+            "after": "conn_accepted",
+            "timeout_ms": 60000
+          }
+        },
+        {
+          "Unit": {
+            "binding": "first_import",
+            "filter": "|= \"received Import bi-stream\"",
+            "after": "first_bi",
+            "timeout_ms": 30000
+          }
+        },
+        {
+          "Any": {
+            "binding": "second_bi_outcome",
+            "after": "first_import",
+            "predictions": [
+              {
+                "Unit": {
+                  "binding": "second_bi_received",
+                  "filter": "|= \"accept_bi: got bi-stream\"",
+                  "timeout_ms": 120000
+                }
+              },
+              {
+                "Unit": {
+                  "binding": "conn_error",
+                  "filter": "|= \"failed to accept bi-stream\"",
+                  "timeout_ms": 120000
+                }
+              }
+            ]
+          }
+        }
+      ]
+    }
+  }
+}
