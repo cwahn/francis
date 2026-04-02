@@ -35,10 +35,8 @@ pub fn validate(theory: &PredictionDef) -> Result<(), Vec<ValidationError>> {
     collect_bindings(theory, &mut all_bindings, &mut binding_order, &mut errors);
 
     // Phase 2: check root has no `after`
-    if let PredictionDef::Unit(u) = theory {
-        if u.after.is_some() {
-            errors.push(ValidationError::RootHasAfter);
-        }
+    if theory.after().is_some() {
+        errors.push(ValidationError::RootHasAfter);
     }
 
     // Phase 3: check references exist and are not forward
@@ -84,30 +82,29 @@ fn check_references(
     binding_order: &[String],
     errors: &mut Vec<ValidationError>,
 ) {
-    // Check `after` on any node kind
-    let after = pred.after();
     let pred_name = pred.binding().unwrap_or("<anonymous>");
 
-    if let Some(ref_name) = after {
-        if let Some(ref_pos) = binding_order.iter().position(|b| b == ref_name) {
-            let self_pos = pred.binding().and_then(|b| binding_order.iter().position(|x| x == b));
-            if let Some(sp) = self_pos {
-                if ref_pos >= sp {
-                    errors.push(ValidationError::ForwardReference {
-                        prediction: pred_name.to_owned(),
-                        reference: ref_name.to_owned(),
-                    });
-                }
-            }
-        } else {
+    'after_check: {
+        let Some(ref_name) = pred.after() else { break 'after_check };
+        let Some(ref_pos) = binding_order.iter().position(|b| b == ref_name) else {
             errors.push(ValidationError::UnknownReference {
+                prediction: pred_name.to_owned(),
+                reference: ref_name.to_owned(),
+            });
+            break 'after_check;
+        };
+        let Some(own_binding) = pred.binding() else { break 'after_check };
+        let Some(self_pos) = binding_order.iter().position(|b| b == own_binding) else {
+            break 'after_check;
+        };
+        if ref_pos >= self_pos {
+            errors.push(ValidationError::ForwardReference {
                 prediction: pred_name.to_owned(),
                 reference: ref_name.to_owned(),
             });
         }
     }
 
-    // Recurse into children
     match pred {
         PredictionDef::Unit(_) => {}
         PredictionDef::All(GroupPrediction { predictions, .. })
@@ -198,6 +195,17 @@ mod tests {
         ]);
         let errs = validate(&theory).unwrap_err();
         assert!(errs.iter().any(|e| matches!(e, ValidationError::EmptyGroup(name) if name == "empty")));
+    }
+
+    #[test]
+    fn root_group_has_after() {
+        let theory = PredictionDef::All(GroupPrediction {
+            binding: Some("root".to_owned()),
+            after: Some("something".to_owned()),
+            predictions: vec![unit(Some("a"), "|= \"x\"", None, 1000)],
+        });
+        let errs = validate(&theory).unwrap_err();
+        assert!(errs.iter().any(|e| matches!(e, ValidationError::RootHasAfter)));
     }
 
     #[test]
