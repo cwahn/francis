@@ -71,19 +71,19 @@ async fn main() {
 
     // Load theory
     let contents = match std::fs::read_to_string(&cli.theory) {
-        Ok(c) => c,
         Err(e) => {
             error!(path = %cli.theory.display(), "failed to read theory file: {e}");
             process::exit(1);
         }
+        Ok(c) => c,
     };
 
     let mut config: RunConfig = match serde_json::from_str(&contents) {
-        Ok(c) => c,
         Err(e) => {
             error!("failed to parse theory JSON: {e}");
             process::exit(1);
         }
+        Ok(c) => c,
     };
 
     // Apply overrides
@@ -127,14 +127,18 @@ async fn main() {
         RunResult::Pass(_) => {
             match cli.output {
                 OutputFormat::Text => println!("{result}"),
-                OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&result).unwrap()),
+                OutputFormat::Json => {
+                    println!("{}", serde_json::to_string_pretty(&result).unwrap())
+                }
             }
             process::exit(0);
         }
         RunResult::Fail(_) => {
             match cli.output {
                 OutputFormat::Text => println!("{result}"),
-                OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&result).unwrap()),
+                OutputFormat::Json => {
+                    println!("{}", serde_json::to_string_pretty(&result).unwrap())
+                }
             }
             process::exit(1);
         }

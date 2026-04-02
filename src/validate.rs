@@ -11,16 +11,26 @@ pub enum ValidationError {
     #[error("duplicate binding: `{0}`")]
     DuplicateBinding(String),
     #[error("unknown reference `{reference}` in prediction `{prediction}`")]
-    UnknownReference { prediction: String, reference: String },
-    #[error("forward reference `{reference}` in prediction `{prediction}` (referenced prediction not yet observable)")]
-    ForwardReference { prediction: String, reference: String },
+    UnknownReference {
+        prediction: String,
+        reference: String,
+    },
+    #[error(
+        "forward reference `{reference}` in prediction `{prediction}` (referenced prediction not yet observable)"
+    )]
+    ForwardReference {
+        prediction: String,
+        reference: String,
+    },
     #[error("empty group prediction `{0}` (All/Any must have >= 1 child)")]
     EmptyGroup(String),
     #[error("root prediction must not have `after` set")]
     RootHasAfter,
     #[error("invalid regexp in prediction `{prediction}`: {error}")]
     InvalidRegexp { prediction: String, error: String },
-    #[error("capture `${{{capture}}}` used in prediction `{prediction}` but not guaranteed to be defined (not defined or defined in only some branches of an Any group)")]
+    #[error(
+        "capture `${{{capture}}}` used in prediction `{prediction}` but not guaranteed to be defined (not defined or defined in only some branches of an Any group)"
+    )]
     UndefinedCapture { prediction: String, capture: String },
 }
 
@@ -100,7 +110,9 @@ fn check_references(
     let pred_name = pred.binding().unwrap_or("<anonymous>");
 
     'after_check: {
-        let Some(ref_name) = pred.after() else { break 'after_check };
+        let Some(ref_name) = pred.after() else {
+            break 'after_check;
+        };
         let Some(ref_pos) = binding_order.iter().position(|b| b == ref_name) else {
             errors.push(ValidationError::UnknownReference {
                 prediction: pred_name.to_owned(),
@@ -108,7 +120,9 @@ fn check_references(
             });
             break 'after_check;
         };
-        let Some(own_binding) = pred.binding() else { break 'after_check };
+        let Some(own_binding) = pred.binding() else {
+            break 'after_check;
+        };
         let Some(self_pos) = binding_order.iter().position(|b| b == own_binding) else {
             break 'after_check;
         };
@@ -226,7 +240,8 @@ fn check_captures(
             for branch in &g.predictions {
                 let mut branch_guaranteed = guaranteed.clone();
                 check_captures(branch, &mut branch_guaranteed, errors);
-                let new: HashSet<String> = branch_guaranteed.difference(guaranteed).cloned().collect();
+                let new: HashSet<String> =
+                    branch_guaranteed.difference(guaranteed).cloned().collect();
                 branch_new_caps.push(new);
             }
             // Only intersection across ALL branches is guaranteed after the Any.
@@ -247,7 +262,12 @@ mod tests {
     use super::*;
     use crate::theory::*;
 
-    fn unit(binding: Option<&str>, pattern: &str, after: Option<&str>, timeout_ms: u64) -> PredictionDef {
+    fn unit(
+        binding: Option<&str>,
+        pattern: &str,
+        after: Option<&str>,
+        timeout_ms: u64,
+    ) -> PredictionDef {
         PredictionDef::Unit(UnitPrediction {
             binding: binding.map(str::to_owned),
             pattern: pattern.to_owned(),
@@ -274,53 +294,70 @@ mod tests {
 
     #[test]
     fn valid_theory() {
-        let theory = all(Some("root"), vec![
-            unit(Some("a"), "|= \"hello\"", None, 5000),
-            unit(Some("b"), "|= \"world\"", None, 5000),
-            any(Some("branch"), vec![
-                unit(Some("c"), "|= \"left\"", None, 3000),
-                unit(Some("d"), "|= \"right\"", None, 3000),
-            ]),
-        ]);
+        let theory = all(
+            Some("root"),
+            vec![
+                unit(Some("a"), "|= \"hello\"", None, 5000),
+                unit(Some("b"), "|= \"world\"", None, 5000),
+                any(
+                    Some("branch"),
+                    vec![
+                        unit(Some("c"), "|= \"left\"", None, 3000),
+                        unit(Some("d"), "|= \"right\"", None, 3000),
+                    ],
+                ),
+            ],
+        );
         assert!(validate(&theory).is_ok());
     }
 
     #[test]
     fn duplicate_binding() {
-        let theory = all(Some("root"), vec![
-            unit(Some("a"), "|= \"x\"", None, 1000),
-            unit(Some("a"), "|= \"y\"", None, 1000),
-        ]);
+        let theory = all(
+            Some("root"),
+            vec![
+                unit(Some("a"), "|= \"x\"", None, 1000),
+                unit(Some("a"), "|= \"y\"", None, 1000),
+            ],
+        );
         let errs = validate(&theory).unwrap_err();
-        assert!(errs.iter().any(|e| matches!(e, ValidationError::DuplicateBinding(b) if b == "a")));
+        assert!(
+            errs.iter()
+                .any(|e| matches!(e, ValidationError::DuplicateBinding(b) if b == "a"))
+        );
     }
 
     #[test]
     fn unknown_reference() {
-        let theory = all(Some("root"), vec![
-            unit(Some("a"), "|= \"x\"", Some("nonexistent"), 1000),
-        ]);
+        let theory = all(
+            Some("root"),
+            vec![unit(Some("a"), "|= \"x\"", Some("nonexistent"), 1000)],
+        );
         let errs = validate(&theory).unwrap_err();
         assert!(errs.iter().any(|e| matches!(e, ValidationError::UnknownReference { reference, .. } if reference == "nonexistent")));
     }
 
     #[test]
     fn forward_reference() {
-        let theory = all(Some("root"), vec![
-            unit(Some("a"), "|= \"x\"", Some("b"), 1000),
-            unit(Some("b"), "|= \"y\"", None, 1000),
-        ]);
+        let theory = all(
+            Some("root"),
+            vec![
+                unit(Some("a"), "|= \"x\"", Some("b"), 1000),
+                unit(Some("b"), "|= \"y\"", None, 1000),
+            ],
+        );
         let errs = validate(&theory).unwrap_err();
         assert!(errs.iter().any(|e| matches!(e, ValidationError::ForwardReference { prediction, reference } if prediction == "a" && reference == "b")));
     }
 
     #[test]
     fn empty_group() {
-        let theory = all(Some("root"), vec![
-            any(Some("empty"), vec![]),
-        ]);
+        let theory = all(Some("root"), vec![any(Some("empty"), vec![])]);
         let errs = validate(&theory).unwrap_err();
-        assert!(errs.iter().any(|e| matches!(e, ValidationError::EmptyGroup(name) if name == "empty")));
+        assert!(
+            errs.iter()
+                .any(|e| matches!(e, ValidationError::EmptyGroup(name) if name == "empty"))
+        );
     }
 
     #[test]
@@ -331,16 +368,22 @@ mod tests {
             predictions: vec![unit(Some("a"), "|= \"x\"", None, 1000)],
         });
         let errs = validate(&theory).unwrap_err();
-        assert!(errs.iter().any(|e| matches!(e, ValidationError::RootHasAfter)));
+        assert!(
+            errs.iter()
+                .any(|e| matches!(e, ValidationError::RootHasAfter))
+        );
     }
 
     #[test]
     fn explicit_back_reference() {
-        let theory = all(Some("root"), vec![
-            unit(Some("a"), "|= \"x\"", None, 1000),
-            unit(Some("b"), "|= \"y\"", None, 1000),
-            unit(Some("c"), "|= \"z\"", Some("a"), 3000),
-        ]);
+        let theory = all(
+            Some("root"),
+            vec![
+                unit(Some("a"), "|= \"x\"", None, 1000),
+                unit(Some("b"), "|= \"y\"", None, 1000),
+                unit(Some("c"), "|= \"z\"", Some("a"), 3000),
+            ],
+        );
         assert!(validate(&theory).is_ok());
     }
 
@@ -348,14 +391,26 @@ mod tests {
 
     #[test]
     fn invalid_regexp_pattern() {
-        let theory = unit(Some("a"), "|= \"foo\" | regexp \"(?P<x>[unclosed)\"", None, 1000);
+        let theory = unit(
+            Some("a"),
+            "|= \"foo\" | regexp \"(?P<x>[unclosed)\"",
+            None,
+            1000,
+        );
         let errs = validate(&theory).unwrap_err();
-        assert!(errs.iter().any(|e| matches!(e, ValidationError::InvalidRegexp { prediction, .. } if prediction == "a")));
+        assert!(errs.iter().any(
+            |e| matches!(e, ValidationError::InvalidRegexp { prediction, .. } if prediction == "a")
+        ));
     }
 
     #[test]
     fn valid_regexp_pattern() {
-        let theory = unit(Some("a"), "|= \"conn\" | regexp \"conn_id=(?P<conn_id>[a-f0-9]+)\"", None, 1000);
+        let theory = unit(
+            Some("a"),
+            "|= \"conn\" | regexp \"conn_id=(?P<conn_id>[a-f0-9]+)\"",
+            None,
+            1000,
+        );
         assert!(validate(&theory).is_ok());
     }
 
@@ -363,19 +418,35 @@ mod tests {
 
     #[test]
     fn capture_defined_before_use_ok() {
-        let theory = all(Some("root"), vec![
-            unit(Some("a"), "|= \"conn\" | regexp \"id=(?P<cid>\\\\w+)\"", None, 1000),
-            unit(Some("b"), "|= \"${cid}\"", Some("a"), 1000),
-        ]);
+        let theory = all(
+            Some("root"),
+            vec![
+                unit(
+                    Some("a"),
+                    "|= \"conn\" | regexp \"id=(?P<cid>\\\\w+)\"",
+                    None,
+                    1000,
+                ),
+                unit(Some("b"), "|= \"${cid}\"", Some("a"), 1000),
+            ],
+        );
         assert!(validate(&theory).is_ok());
     }
 
     #[test]
     fn capture_used_before_defined_fails() {
-        let theory = all(Some("root"), vec![
-            unit(Some("a"), "|= \"${cid}\"", None, 1000),
-            unit(Some("b"), "|= \"conn\" | regexp \"id=(?P<cid>\\\\w+)\"", Some("a"), 1000),
-        ]);
+        let theory = all(
+            Some("root"),
+            vec![
+                unit(Some("a"), "|= \"${cid}\"", None, 1000),
+                unit(
+                    Some("b"),
+                    "|= \"conn\" | regexp \"id=(?P<cid>\\\\w+)\"",
+                    Some("a"),
+                    1000,
+                ),
+            ],
+        );
         let errs = validate(&theory).unwrap_err();
         assert!(errs.iter().any(|e| matches!(e, ValidationError::UndefinedCapture { prediction, capture } if prediction == "a" && capture == "cid")));
     }
@@ -383,13 +454,24 @@ mod tests {
     #[test]
     fn partial_any_capture_used_after_fails() {
         // Branch A defines `cid`, branch B does not. Using ${cid} after Any should fail.
-        let theory = all(Some("root"), vec![
-            any(Some("gate"), vec![
-                unit(Some("a"), "|= \"conn\" | regexp \"id=(?P<cid>\\\\w+)\"", None, 1000),
-                unit(Some("b"), "|= \"other\"", None, 1000),
-            ]),
-            unit(Some("c"), "|= \"${cid}\"", Some("gate"), 1000),
-        ]);
+        let theory = all(
+            Some("root"),
+            vec![
+                any(
+                    Some("gate"),
+                    vec![
+                        unit(
+                            Some("a"),
+                            "|= \"conn\" | regexp \"id=(?P<cid>\\\\w+)\"",
+                            None,
+                            1000,
+                        ),
+                        unit(Some("b"), "|= \"other\"", None, 1000),
+                    ],
+                ),
+                unit(Some("c"), "|= \"${cid}\"", Some("gate"), 1000),
+            ],
+        );
         let errs = validate(&theory).unwrap_err();
         assert!(errs.iter().any(|e| matches!(e, ValidationError::UndefinedCapture { prediction, capture } if prediction == "c" && capture == "cid")));
     }
@@ -397,13 +479,29 @@ mod tests {
     #[test]
     fn all_any_branches_define_capture_ok() {
         // Both branches of Any define `cid`, so it's guaranteed after.
-        let theory = all(Some("root"), vec![
-            any(Some("gate"), vec![
-                unit(Some("a"), "|= \"conn1\" | regexp \"id=(?P<cid>\\\\w+)\"", None, 1000),
-                unit(Some("b"), "|= \"conn2\" | regexp \"id=(?P<cid>\\\\w+)\"", None, 1000),
-            ]),
-            unit(Some("c"), "|= \"${cid}\"", Some("gate"), 1000),
-        ]);
+        let theory = all(
+            Some("root"),
+            vec![
+                any(
+                    Some("gate"),
+                    vec![
+                        unit(
+                            Some("a"),
+                            "|= \"conn1\" | regexp \"id=(?P<cid>\\\\w+)\"",
+                            None,
+                            1000,
+                        ),
+                        unit(
+                            Some("b"),
+                            "|= \"conn2\" | regexp \"id=(?P<cid>\\\\w+)\"",
+                            None,
+                            1000,
+                        ),
+                    ],
+                ),
+                unit(Some("c"), "|= \"${cid}\"", Some("gate"), 1000),
+            ],
+        );
         assert!(validate(&theory).is_ok());
     }
 }

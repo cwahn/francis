@@ -8,8 +8,8 @@ use tracing::debug;
 pub enum LokiError {
     #[error("HTTP error: {0}")]
     Http(#[from] reqwest::Error),
-    #[error("Loki returned status {0}: {1}")]
-    Status(String, String),
+    #[error("Loki error ({status}): {message}")]
+    Api { status: String, message: String },
     #[error("unexpected response shape")]
     BadResponse,
 }
@@ -26,6 +26,9 @@ pub struct LogEntry {
 struct QueryRangeResponse {
     status: String,
     data: Option<QueryRangeData>,
+    /// Present on error responses.
+    #[serde(default)]
+    error: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -82,13 +85,19 @@ impl LokiClient {
             .send()
             .await?;
 
+        // Capture HTTP status before consuming body.
+        let http_status = resp.status();
         let body: QueryRangeResponse = resp.json().await?;
 
         if body.status != "success" {
-            return Err(LokiError::Status(
-                body.status,
-                "query did not succeed".into(),
-            ));
+            return Err(LokiError::Api {
+                status: if http_status.is_success() {
+                    body.status
+                } else {
+                    http_status.to_string()
+                },
+                message: body.error.unwrap_or_else(|| "query did not succeed".into()),
+            });
         }
 
         let data = body.data.ok_or(LokiError::BadResponse)?;
