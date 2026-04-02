@@ -110,7 +110,10 @@ impl LokiClient {
             .filter_map(|(ts_str, line)| {
                 let nanos: i64 = ts_str.parse().ok()?;
                 let ts = DateTime::from_timestamp_nanos(nanos);
-                Some(LogEntry { timestamp: ts, line })
+                Some(LogEntry {
+                    timestamp: ts,
+                    line,
+                })
             })
             .min_by_key(|e| e.timestamp);
 

@@ -5,9 +5,9 @@ use chrono::{DateTime, Duration, Utc};
 use regex::Regex;
 use tracing::{debug, error, info, trace, warn};
 
+use crate::hypothesis::{Binding, PredictionDef, RunConfig};
 use crate::loki::LokiClient;
 use crate::observation::{Audit, FailureReport, Observation, ObservationKind, RunResult};
-use crate::hypothesis::{Binding, PredictionDef, RunConfig};
 
 // ---------------------------------------------------------------------------
 // Internal node state
@@ -48,9 +48,16 @@ enum NodeKind {
 #[derive(Debug, Clone)]
 enum NodeState {
     Pending,
-    Expecting { at: DateTime<Utc> },
-    Observed { at: DateTime<Utc>, line: Option<String> },
-    Failed { expected_at: DateTime<Utc> },
+    Expecting {
+        at: DateTime<Utc>,
+    },
+    Observed {
+        at: DateTime<Utc>,
+        line: Option<String>,
+    },
+    Failed {
+        expected_at: DateTime<Utc>,
+    },
 }
 
 impl NodeState {
@@ -76,19 +83,18 @@ fn apply_captures(pattern: &str, captures: &HashMap<String, String>) -> String {
 /// any named capture groups found.
 fn extract_regexp_captures(pattern: &str, line: &str) -> HashMap<String, String> {
     static STAGE_RE: OnceLock<Regex> = OnceLock::new();
-    let stage_re = STAGE_RE.get_or_init(|| {
-        Regex::new(r#"\|\s*regexp\s*"((?:[^"\\]|\\.)*)""#).unwrap()
-    });
+    let stage_re =
+        STAGE_RE.get_or_init(|| Regex::new(r#"\|\s*regexp\s*"((?:[^"\\]|\\.)*)""#).unwrap());
 
     let mut out = HashMap::new();
     for caps in stage_re.captures_iter(pattern) {
         let raw = caps[1].replace("\\\"", "\"");
-        if let Ok(re) = Regex::new(&raw) {
-            if let Some(m) = re.captures(line) {
-                for name in re.capture_names().flatten() {
-                    if let Some(v) = m.name(name) {
-                        out.insert(name.to_owned(), v.as_str().to_owned());
-                    }
+        if let Ok(re) = Regex::new(&raw)
+            && let Some(m) = re.captures(line)
+        {
+            for name in re.capture_names().flatten() {
+                if let Some(v) = m.name(name) {
+                    out.insert(name.to_owned(), v.as_str().to_owned());
                 }
             }
         }
@@ -100,15 +106,17 @@ fn extract_regexp_captures(pattern: &str, line: &str) -> HashMap<String, String>
 // Flatten the tree into a vec
 // ---------------------------------------------------------------------------
 
-fn flatten(def: &PredictionDef, parent: Option<usize>, nodes: &mut Vec<Node>, anon_counter: &mut usize) {
+fn flatten(
+    def: &PredictionDef,
+    parent: Option<usize>,
+    nodes: &mut Vec<Node>,
+    anon_counter: &mut usize,
+) {
     let id = nodes.len();
-    let name = def
-        .binding()
-        .map(str::to_owned)
-        .unwrap_or_else(|| {
-            *anon_counter += 1;
-            format!("_anon_{}", anon_counter)
-        });
+    let name = def.binding().map(str::to_owned).unwrap_or_else(|| {
+        *anon_counter += 1;
+        format!("_anon_{}", anon_counter)
+    });
 
     match def {
         PredictionDef::Unit(u) => {
@@ -128,7 +136,10 @@ fn flatten(def: &PredictionDef, parent: Option<usize>, nodes: &mut Vec<Node>, an
             nodes.push(Node {
                 id,
                 name,
-                kind: NodeKind::All { after: g.after.clone(), children: Vec::new() },
+                kind: NodeKind::All {
+                    after: g.after.clone(),
+                    children: Vec::new(),
+                },
                 state: NodeState::Pending,
                 parent,
             });
@@ -146,7 +157,10 @@ fn flatten(def: &PredictionDef, parent: Option<usize>, nodes: &mut Vec<Node>, an
             nodes.push(Node {
                 id,
                 name,
-                kind: NodeKind::Any { after: g.after.clone(), children: Vec::new() },
+                kind: NodeKind::Any {
+                    after: g.after.clone(),
+                    children: Vec::new(),
+                },
                 state: NodeState::Pending,
                 parent,
             });
@@ -179,10 +193,7 @@ pub async fn run(config: &RunConfig, t0: DateTime<Utc>) -> RunResult {
     flatten(&config.hypothesis, None, &mut nodes, &mut anon_counter);
 
     // Build name → id index
-    let name_to_id: HashMap<String, usize> = nodes
-        .iter()
-        .map(|n| (n.name.clone(), n.id))
-        .collect();
+    let name_to_id: HashMap<String, usize> = nodes.iter().map(|n| (n.name.clone(), n.id)).collect();
 
     // Observations audit trail
     let mut observations: Vec<Observation> = Vec::new();
@@ -201,7 +212,16 @@ pub async fn run(config: &RunConfig, t0: DateTime<Utc>) -> RunResult {
         expecting_pass(&mut nodes, t0, &name_to_id, &mut observations);
 
         // Query pass: poll Loki for each expecting Unit
-        query_pass(&mut nodes, &client, base_query, now, ingestion_slack, &mut capture_store, &mut observations).await;
+        query_pass(
+            &mut nodes,
+            &client,
+            base_query,
+            now,
+            ingestion_slack,
+            &mut capture_store,
+            &mut observations,
+        )
+        .await;
 
         // Propagation pass: propagate child results to parents
         propagation_pass(&mut nodes, &mut observations);
@@ -251,14 +271,16 @@ fn expect_node(
 }
 
 fn expecting_pass(
-    nodes: &mut Vec<Node>,
+    nodes: &mut [Node],
     _t0: DateTime<Utc>,
     name_to_id: &HashMap<String, usize>,
     observations: &mut Vec<Observation>,
 ) {
     // We iterate by index to avoid borrow issues
     for i in 0..nodes.len() {
-        let &NodeState::Expecting { at: expected_at } = &nodes[i].state else { continue };
+        let &NodeState::Expecting { at: expected_at } = &nodes[i].state else {
+            continue;
+        };
 
         // Both All and Any stage children identically:
         // stage every pending child whose `after` dependency is met.
@@ -283,6 +305,7 @@ fn expecting_pass(
 /// Determine the reference time for a child node.
 /// - Explicit `after`: waits for that binding to be Observed, uses its timestamp.
 /// - No `after`: uses parent's expected time (immediate).
+///
 /// Returns None if the `after` dependency isn't observed yet.
 fn resolve_ref_time(
     child: &Node,
@@ -309,7 +332,7 @@ fn resolve_ref_time(
 }
 
 async fn query_pass(
-    nodes: &mut Vec<Node>,
+    nodes: &mut [Node],
     client: &LokiClient,
     base_query: &str,
     now: DateTime<Utc>,
@@ -320,7 +343,12 @@ async fn query_pass(
     for i in 0..nodes.len() {
         let (pattern, timeout_ms, expected_at) = match &nodes[i] {
             Node {
-                kind: NodeKind::Unit { pattern, after: _, timeout_ms },
+                kind:
+                    NodeKind::Unit {
+                        pattern,
+                        after: _,
+                        timeout_ms,
+                    },
                 state: NodeState::Expecting { at },
                 ..
             } => (pattern.clone(), *timeout_ms, *at),
@@ -378,7 +406,7 @@ async fn query_pass(
     }
 }
 
-fn propagation_pass(nodes: &mut Vec<Node>, observations: &mut Vec<Observation>) {
+fn propagation_pass(nodes: &mut [Node], observations: &mut Vec<Observation>) {
     // Process from leaves upward: iterate by reverse id
     for i in (0..nodes.len()).rev() {
         if nodes[i].state.is_terminal() || matches!(nodes[i].state, NodeState::Pending) {
@@ -396,7 +424,9 @@ fn propagation_pass(nodes: &mut Vec<Node>, observations: &mut Vec<Observation>) 
                     .any(|&c| matches!(nodes[c].state, NodeState::Failed { .. }));
 
                 if any_failed {
-                    let &NodeState::Expecting { at: expected_at } = &nodes[i].state else { unreachable!() };
+                    let &NodeState::Expecting { at: expected_at } = &nodes[i].state else {
+                        unreachable!()
+                    };
                     let at = Utc::now();
                     let name = nodes[i].name.clone();
                     nodes[i].state = NodeState::Failed { expected_at };
@@ -437,7 +467,9 @@ fn propagation_pass(nodes: &mut Vec<Node>, observations: &mut Vec<Observation>) 
                     .all(|&c| matches!(nodes[c].state, NodeState::Failed { .. }));
 
                 if all_failed {
-                    let &NodeState::Expecting { at: expected_at } = &nodes[i].state else { unreachable!() };
+                    let &NodeState::Expecting { at: expected_at } = &nodes[i].state else {
+                        unreachable!()
+                    };
                     let at = Utc::now();
                     let name = nodes[i].name.clone();
                     nodes[i].state = NodeState::Failed { expected_at };
@@ -448,7 +480,9 @@ fn propagation_pass(nodes: &mut Vec<Node>, observations: &mut Vec<Observation>) 
                         log_line: None,
                     });
                 } else if let Some(&c) = first_observed {
-                    let NodeState::Observed { at, line } = &nodes[c].state else { unreachable!() };
+                    let NodeState::Observed { at, line } = &nodes[c].state else {
+                        unreachable!()
+                    };
                     let (at, line) = (*at, line.clone());
                     let name = nodes[i].name.clone();
                     debug!(group = %name, winner = %nodes[c].name, "Any group observed");
@@ -467,7 +501,9 @@ fn propagation_pass(nodes: &mut Vec<Node>, observations: &mut Vec<Observation>) 
 }
 
 fn is_critical_timeout(nodes: &[Node], node_id: usize) -> bool {
-    let Some(parent_id) = nodes[node_id].parent else { return true };
+    let Some(parent_id) = nodes[node_id].parent else {
+        return true;
+    };
     match &nodes[parent_id].kind {
         NodeKind::Unit { .. } | NodeKind::All { .. } => true,
         NodeKind::Any { children, .. } => children
@@ -482,8 +518,17 @@ fn find_failed_unit(
     _name_to_id: &HashMap<String, usize>,
 ) -> (String, String, DateTime<Utc>, DateTime<Utc>) {
     for node in nodes {
-        let NodeState::Failed { expected_at, .. } = &node.state else { continue };
-        let NodeKind::Unit { pattern, timeout_ms, .. } = &node.kind else { continue };
+        let NodeState::Failed { expected_at, .. } = &node.state else {
+            continue;
+        };
+        let NodeKind::Unit {
+            pattern,
+            timeout_ms,
+            ..
+        } = &node.kind
+        else {
+            continue;
+        };
         let search_start = *expected_at;
         let search_end = *expected_at + Duration::milliseconds(*timeout_ms as i64);
         return (node.name.clone(), pattern.clone(), search_start, search_end);

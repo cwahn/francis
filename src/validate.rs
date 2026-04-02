@@ -50,7 +50,12 @@ pub fn validate(hypothesis: &PredictionDef) -> Result<(), Vec<ValidationError>> 
     let mut binding_order = Vec::new();
 
     // Phase 1: collect all bindings, check uniqueness and non-empty groups
-    collect_bindings(hypothesis, &mut all_bindings, &mut binding_order, &mut errors);
+    collect_bindings(
+        hypothesis,
+        &mut all_bindings,
+        &mut binding_order,
+        &mut errors,
+    );
 
     // Phase 2: check root has no `after`
     if hypothesis.after().is_some() {
@@ -209,6 +214,7 @@ fn check_unit_patterns(u: &UnitPrediction, errors: &mut Vec<ValidationError>) {
 /// Walk the theory DFS, tracking which captures are guaranteed to be defined.
 /// - `All`: captures accumulate monotonically (all children run).
 /// - `Any`: only captures defined by ALL branches (intersection) are guaranteed.
+///
 /// `${name}` used outside guaranteed scope → UndefinedCapture error.
 fn check_captures(
     pred: &PredictionDef,

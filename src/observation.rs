@@ -66,7 +66,11 @@ impl fmt::Display for Audit {
                     } else {
                         line.clone()
                     };
-                    writeln!(f, "  [{:<8}] {:<24} at {}  {}", obs.kind, obs.prediction, ts, truncated)?;
+                    writeln!(
+                        f,
+                        "  [{:<8}] {:<24} at {}  {}",
+                        obs.kind, obs.prediction, ts, truncated
+                    )?;
                 }
                 None => {
                     writeln!(f, "  [{:<8}] {:<24} at {}", obs.kind, obs.prediction, ts)?;
@@ -81,9 +85,12 @@ impl fmt::Display for FailureReport {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "✗ FAILED: {}", self.failed_prediction)?;
         writeln!(f, "  Pattern: {}", self.pattern)?;
-        writeln!(f, "  Window:  [{}, {}]",
+        writeln!(
+            f,
+            "  Window:  [{}, {}]",
             self.search_start.format("%Y-%m-%dT%H:%M:%S%.3fZ"),
-            self.search_end.format("%Y-%m-%dT%H:%M:%S%.3fZ"))?;
+            self.search_end.format("%Y-%m-%dT%H:%M:%S%.3fZ")
+        )?;
         writeln!(f)?;
         writeln!(f, "  Audit trail:")?;
         write!(f, "{}", self.audit)
