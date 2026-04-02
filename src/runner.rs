@@ -7,7 +7,7 @@ use tracing::{debug, error, info, trace, warn};
 
 use crate::loki::LokiClient;
 use crate::observation::{Audit, FailureReport, Observation, ObservationKind, RunResult};
-use crate::theory::{Binding, PredictionDef, RunConfig};
+use crate::hypothesis::{Binding, PredictionDef, RunConfig};
 
 // ---------------------------------------------------------------------------
 // Internal node state
@@ -176,7 +176,7 @@ pub async fn run(config: &RunConfig, t0: DateTime<Utc>) -> RunResult {
     // Flatten tree
     let mut nodes = Vec::new();
     let mut anon_counter = 0usize;
-    flatten(&config.theory, None, &mut nodes, &mut anon_counter);
+    flatten(&config.hypothesis, None, &mut nodes, &mut anon_counter);
 
     // Build name → id index
     let name_to_id: HashMap<String, usize> = nodes
@@ -213,7 +213,7 @@ pub async fn run(config: &RunConfig, t0: DateTime<Utc>) -> RunResult {
                 // Find the first failed Unit for the report
                 let (failed_name, pattern, search_start, search_end) =
                     find_failed_unit(&nodes, &name_to_id);
-                warn!(prediction = %failed_name, "theory falsified");
+                warn!(prediction = %failed_name, "hypothesis falsified");
                 return RunResult::Fail(FailureReport {
                     failed_prediction: failed_name,
                     pattern,
@@ -223,7 +223,7 @@ pub async fn run(config: &RunConfig, t0: DateTime<Utc>) -> RunResult {
                 });
             }
             NodeState::Observed { .. } => {
-                info!("theory verified — all predictions observed");
+                info!("hypothesis verified — all predictions observed");
                 return RunResult::Pass(Audit { observations });
             }
             _ => {}

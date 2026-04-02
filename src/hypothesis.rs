@@ -14,7 +14,7 @@ pub struct RunConfig {
     pub poll_interval_ms: u64,
     #[serde(default = "default_ingestion_slack")]
     pub ingestion_slack_ms: u64,
-    pub theory: PredictionDef,
+    pub hypothesis: PredictionDef,
 }
 
 fn default_poll_interval() -> u64 {

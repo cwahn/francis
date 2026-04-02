@@ -5,7 +5,7 @@
   },
   "poll_interval_ms": 3000,
   "ingestion_slack_ms": 10000,
-  "theory": {
+  "hypothesis": {
     "All": {
       "binding": "root",
       "predictions": [

@@ -1,6 +1,6 @@
 # francis
 
-**Log-based theory verifier.** Declare a tree of ordered predictions about expected log events, run them against a [Loki](https://grafana.com/oss/loki/) instance, and get a clear pass/fail report with a full audit trail.
+**Log-based hypothesis verifier.** Declare a tree of ordered predictions about expected log events, run them against a [Loki](https://grafana.com/oss/loki/) instance, and get a clear pass/fail report with a full audit trail.
 
 ## Motivation
 
@@ -15,24 +15,24 @@ cargo install francis
 ## Usage
 
 ```
-francis [OPTIONS] <THEORY>
+francis [OPTIONS] <HYPOTHESIS>
 ```
 
 | Option | Default | Description |
 |---|---|---|
 | `--t0 <RFC3339\|now>` | `now` | Reference start time for the root prediction |
-| `--loki-url <URL>` | from theory | Override the Loki URL |
-| `--base-query <LOGQL>` | from theory | Override the base LogQL selector |
+| `--loki-url <URL>` | from hypothesis | Override the Loki URL |
+| `--base-query <LOGQL>` | from hypothesis | Override the base LogQL selector |
 | `--output <text\|json>` | `text` | Output format |
-| `--dry-run` | | Validate the theory without executing |
+| `--dry-run` | | Validate the hypothesis without executing |
 
-Exit code `0` = theory verified, `1` = falsified or error.
+Exit code `0` = hypothesis verified, `1` = falsified or error.
 
 Log verbosity is controlled via `RUST_LOG` (e.g. `RUST_LOG=debug`).
 
-## Theory format
+## Hypothesis format
 
-A theory is a JSON file describing a tree of predictions. The top-level `theory` field is a `PredictionDef` — either a `Unit`, an `All`, or an `Any`.
+A hypothesis is a JSON file describing a tree of predictions. The top-level `hypothesis` field is a `PredictionDef` — either a `Unit`, an `All`, or an `Any`.
 
 ### JSON representation (externally tagged)
 
@@ -119,7 +119,7 @@ Example — correlate all events to the same connection:
 
 ## Full example
 
-See [theories/theta_bistream_h3.json](theories/theta_bistream_h3.json) for a complete real-world theory verifying H3 bi-stream handshake behaviour.
+See [theories/theta_bistream_h3.json](theories/theta_bistream_h3.json) for a complete real-world hypothesis verifying H3 bi-stream handshake behaviour.
 
 ```json
 {
@@ -129,7 +129,7 @@ See [theories/theta_bistream_h3.json](theories/theta_bistream_h3.json) for a com
   },
   "poll_interval_ms": 3000,
   "ingestion_slack_ms": 10000,
-  "theory": {
+  "hypothesis": {
     "All": {
       "binding": "root",
       "predictions": [
@@ -193,7 +193,7 @@ See [theories/theta_bistream_h3.json](theories/theta_bistream_h3.json) for a com
 
 ## Validation
 
-Francis validates the theory at startup and rejects:
+Francis validates the hypothesis at startup and rejects:
 - Duplicate binding names
 - Unknown or forward `after` references
 - Empty `All`/`Any` groups

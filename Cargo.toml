@@ -2,8 +2,8 @@
 name = "francis"
 version = "0.1.0"
 edition = "2024"
-description = "Log-based theory verifier. Declares ordered predictions about log events and verifies them against Loki within timeout windows."
-repository = "https://github.com/chanwoo-ahn/francis"
+description = "Log-based hypothesis verifier. Declares ordered predictions about log events and verifies them against Loki within timeout windows."
+repository = "https://github.com/cwahn/francis"
 license = "MIT"
 keywords = ["loki", "observability", "testing", "log", "verification"]
 categories = ["command-line-utilities", "development-tools::testing"]

@@ -6,9 +6,9 @@ use clap::{Parser, ValueEnum};
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
+use francis::hypothesis::RunConfig;
 use francis::observation::RunResult;
 use francis::runner;
-use francis::theory::RunConfig;
 use francis::validate;
 
 /// Francis — Log-based hypothesis verifier.
@@ -95,14 +95,14 @@ async fn main() {
     }
 
     // Validate
-    if let Err(errors) = validate::validate(&config.theory) {
-        error!("theory validation failed:");
+    if let Err(errors) = validate::validate(&config.hypothesis) {
+        error!("hypothesis validation failed:");
         for e in &errors {
             error!("  {e}");
         }
         process::exit(1);
     }
-    info!("theory validated");
+    info!("hypothesis validated");
 
     if cli.dry_run {
         info!("dry run — skipping execution");

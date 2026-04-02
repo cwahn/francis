@@ -4,7 +4,7 @@ use regex::Regex;
 use std::sync::OnceLock;
 use thiserror::Error;
 
-use crate::theory::{GroupPrediction, PredictionDef, UnitPrediction};
+use crate::hypothesis::{GroupPrediction, PredictionDef, UnitPrediction};
 
 #[derive(Debug, Error)]
 pub enum ValidationError {
@@ -34,7 +34,7 @@ pub enum ValidationError {
     UndefinedCapture { prediction: String, capture: String },
 }
 
-/// Validate a theory before execution.
+/// Validate a hypothesis before execution.
 ///
 /// Checks:
 /// 1. Binding uniqueness across entire tree
@@ -44,28 +44,28 @@ pub enum ValidationError {
 /// 5. Root prediction must not have `after`
 /// 6. All `| regexp "..."` patterns have valid regex syntax
 /// 7. `${name}` capture references are guaranteed to be defined before use
-pub fn validate(theory: &PredictionDef) -> Result<(), Vec<ValidationError>> {
+pub fn validate(hypothesis: &PredictionDef) -> Result<(), Vec<ValidationError>> {
     let mut errors = Vec::new();
     let mut all_bindings = HashSet::new();
     let mut binding_order = Vec::new();
 
     // Phase 1: collect all bindings, check uniqueness and non-empty groups
-    collect_bindings(theory, &mut all_bindings, &mut binding_order, &mut errors);
+    collect_bindings(hypothesis, &mut all_bindings, &mut binding_order, &mut errors);
 
     // Phase 2: check root has no `after`
-    if theory.after().is_some() {
+    if hypothesis.after().is_some() {
         errors.push(ValidationError::RootHasAfter);
     }
 
     // Phase 3: check references exist and are not forward
-    check_references(theory, &binding_order, &mut errors);
+    check_references(hypothesis, &binding_order, &mut errors);
 
     // Phase 4: validate all | regexp "..." patterns have valid regex syntax
-    check_patterns(theory, &mut errors);
+    check_patterns(hypothesis, &mut errors);
 
     // Phase 5: validate capture scope — ${name} refs must be guaranteed-defined before use
     let mut guaranteed: HashSet<String> = HashSet::new();
-    check_captures(theory, &mut guaranteed, &mut errors);
+    check_captures(hypothesis, &mut guaranteed, &mut errors);
 
     if errors.is_empty() {
         Ok(())
@@ -260,7 +260,7 @@ fn check_captures(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::theory::*;
+    use crate::hypothesis::*;
 
     fn unit(
         binding: Option<&str>,
